@@ -11,20 +11,42 @@
 
 import os
 import sys
+from typing import Any
 
-from data_processing.runtime.pure_python import PythonTransformLauncher
+from data_processing.runtime.pure_python import (
+    DefaultPythonTransformRuntime,
+    PythonTransformLauncher,
+)
 
 ################################################################################
 from data_processing.runtime.pure_python.runtime_configuration import (
     PythonTransformRuntimeConfiguration,
 )
+from data_processing.transform import TransformStatistics
 from data_processing.utils import ParamsUtils
-from dpk_license_select.transform import LicenseSelectTransformConfiguration
+from dpk_license_select.transform import (
+    LicenseSelectTransformConfiguration,
+    compute_license_percentages,
+)
+
+
+class LicenseSelectPythonTransformRuntime(DefaultPythonTransformRuntime):
+    """Custom runtime that, after all per-file stats are aggregated, adds
+    percentage fields and the nested per-license breakdown to the job metadata."""
+
+    def __init__(self, params: dict[str, Any]):
+        super().__init__(params)
+
+    def compute_execution_stats(self, stats: TransformStatistics) -> None:
+        compute_license_percentages(stats.get_execution_stats())
 
 
 class LicenseSelectPythonTransformConfiguration(PythonTransformRuntimeConfiguration):
     def __init__(self):
-        super().__init__(transform_config=LicenseSelectTransformConfiguration())
+        super().__init__(
+            transform_config=LicenseSelectTransformConfiguration(),
+            runtime_class=LicenseSelectPythonTransformRuntime,
+        )
 
 
 class LicenseSelect:

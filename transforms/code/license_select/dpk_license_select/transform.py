@@ -16,6 +16,7 @@ import json
 from argparse import ArgumentParser, Namespace
 
 import pyarrow as pa
+import pyarrow.compute as pc
 from data_processing.data_access import DataAccess, DataAccessFactory
 from data_processing.transform import AbstractTableTransform, TransformConfiguration
 from data_processing.utils import (
@@ -51,6 +52,127 @@ ALLOW_NO_LICENSE_CLI_KEY = f"{CLI_PREFIX}{ALLOW_NO_LICENSE_KEY}"
 
 LICENSE_COLUMN_DEFAULT = "license"
 LICENSES_KEY = "licenses"
+
+# Statistics keys emitted per-table by transform(). These are all flat integers so
+# DPK's stats aggregation (which sums values per key across files) merges them
+# correctly. Percentages and the per-license breakdown are derived from these in
+# the runtime's compute_execution_stats (a dict value here would break aggregation).
+STATS_TOTAL_DOCS = "total_docs"
+STATS_DOCS_APPROVED = "docs_approved"
+STATS_DOCS_REJECTED = "docs_rejected"
+STATS_DOCS_NO_LICENSE = "docs_no_license"
+# Per-license flat keys: "<prefix><delim><license-id>". License ids never contain
+# '::', so the delimiter is safe to split on later when reshaping into a nested map.
+STATS_LIC_DELIM = "::"
+STATS_LIC_KEPT_PREFIX = f"lic_kept{STATS_LIC_DELIM}"
+STATS_LIC_REJECTED_PREFIX = f"lic_rejected{STATS_LIC_DELIM}"
+
+
+def _license_stats(table: pa.Table) -> dict:
+    """
+    Compute flat per-table statistics from a transformed table that has a
+    ``license`` column (string or list<string>) and a boolean ``license_status``
+    column. Returns a dict of flat integer keys (see STATS_* constants).
+
+    Counting rules:
+      * total_docs / docs_approved / docs_rejected come from license_status.
+      * docs_no_license counts rows with no license: a null (string column) or a
+        null/empty list (list column).
+      * Per-license keys count, for each license id a row lists, whether that row
+        was kept (license_status true) or rejected. A multi-license row increments
+        every license it lists; rows with no license contribute only to
+        docs_no_license, never to a per-license key.
+    """
+    status = table.column("license_status")
+    licenses = table.column("license")
+
+    total = table.num_rows
+    approved = pc.sum(pc.cast(status, pa.int64())).as_py() or 0
+    rejected = total - approved
+
+    stats = {
+        STATS_TOTAL_DOCS: total,
+        STATS_DOCS_APPROVED: int(approved),
+        STATS_DOCS_REJECTED: int(rejected),
+    }
+
+    is_list = pa.types.is_list(licenses.type) or pa.types.is_large_list(licenses.type)
+    status_list = status.to_pylist()
+    license_list = licenses.to_pylist()
+
+    no_license = 0
+    kept_counts: dict[str, int] = {}
+    rejected_counts: dict[str, int] = {}
+    for lic_value, kept in zip(license_list, status_list):
+        if is_list:
+            ids = lic_value if lic_value else []
+        else:
+            ids = [lic_value] if lic_value is not None else []
+        if len(ids) == 0:
+            no_license += 1
+            continue
+        bucket = kept_counts if kept else rejected_counts
+        for lic in ids:
+            if lic is None:
+                # a null element inside a list — treat as a no-license signal for
+                # that entry; do not create a per-license key for None.
+                continue
+            # Group case-insensitively so "MIT"/"mit" don't fragment — matches the
+            # case-insensitive approval logic in transformer.py.
+            lic = str.casefold(lic)
+            bucket[lic] = bucket.get(lic, 0) + 1
+
+    stats[STATS_DOCS_NO_LICENSE] = no_license
+    for lic, count in kept_counts.items():
+        stats[f"{STATS_LIC_KEPT_PREFIX}{lic}"] = count
+    for lic, count in rejected_counts.items():
+        stats[f"{STATS_LIC_REJECTED_PREFIX}{lic}"] = count
+    return stats
+
+
+def compute_license_percentages(stats: dict) -> dict:
+    """
+    Post-aggregation reshape: given the fully-merged flat stats dict (summed across
+    all files), add percentage fields and fold the flat per-license keys into a
+    nested ``per_license_stats`` map. Mutates and returns ``stats``.
+
+    Shared by the pure-Python and Ray runtimes so the two stay identical.
+
+    Adds:
+      * pct_docs_approved / pct_docs_rejected / pct_docs_no_license (% of total_docs)
+      * per_license_stats: { "<license>": {kept, rejected, total, pct_of_corpus} }
+        where pct_of_corpus = total / total_docs * 100
+    The raw lic_kept::* / lic_rejected::* keys are removed after reshaping.
+    """
+    total = stats.get(STATS_TOTAL_DOCS, 0) or 0
+
+    def pct(n: int) -> float:
+        return round(100.0 * n / total, 2) if total > 0 else 0.0
+
+    stats["pct_docs_approved"] = pct(stats.get(STATS_DOCS_APPROVED, 0))
+    stats["pct_docs_rejected"] = pct(stats.get(STATS_DOCS_REJECTED, 0))
+    stats["pct_docs_no_license"] = pct(stats.get(STATS_DOCS_NO_LICENSE, 0))
+
+    per_license: dict[str, dict] = {}
+    for key in [k for k in stats if k.startswith(STATS_LIC_KEPT_PREFIX) or k.startswith(STATS_LIC_REJECTED_PREFIX)]:
+        if key.startswith(STATS_LIC_KEPT_PREFIX):
+            lic = key[len(STATS_LIC_KEPT_PREFIX):]
+            field = "kept"
+        else:
+            lic = key[len(STATS_LIC_REJECTED_PREFIX):]
+            field = "rejected"
+        entry = per_license.setdefault(lic, {"kept": 0, "rejected": 0})
+        entry[field] += stats.pop(key)
+
+    for lic, entry in per_license.items():
+        entry["total"] = entry["kept"] + entry["rejected"]
+        entry["pct_of_corpus"] = pct(entry["total"])
+
+    # Sort by frequency (most common license first) for readable metadata.
+    stats["per_license_stats"] = dict(
+        sorted(per_license.items(), key=lambda kv: kv[1]["total"], reverse=True)
+    )
+    return stats
 
 
 def _get_supported_licenses(license_file: str, data_access: DataAccess) -> list[str]:
@@ -122,7 +244,8 @@ class LicenseSelectTransform(AbstractTableTransform):
         """
         TransformUtils.validate_columns(table=table, required=[self.license_column])
         new_table = self.transformer.transform(table)
-        return [new_table], {}
+        metadata = _license_stats(new_table)
+        return [new_table], metadata
 
 
 class LicenseSelectTransformConfiguration(TransformConfiguration):

@@ -44,7 +44,20 @@ class TestLicenseSelectTransform(AbstractTableTransformTest):
             "license_status": [True, False],
         }
     )
-    expected_metadata_list = [{}, {}]
+    # transform() now emits flat per-table license statistics. For this table
+    # (Apache-2.0 approved, BAD_LICENSE rejected) the counts are deterministic.
+    # The second element is the metadata for the flush() call (always empty).
+    expected_metadata_list = [
+        {
+            "total_docs": 2,
+            "docs_approved": 1,
+            "docs_rejected": 1,
+            "docs_no_license": 0,
+            "lic_kept::apache-2.0": 1,
+            "lic_rejected::bad_license": 1,
+        },
+        {},
+    ]
 
     def get_test_transform_fixtures(self) -> list[tuple]:
         test_src_dir = os.path.abspath(os.path.dirname(__file__))

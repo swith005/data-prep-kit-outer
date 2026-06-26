@@ -198,10 +198,37 @@
         "source_files": 2,
         "source_size": 6991,
         "result_files": 2,
-        "result_size": 7511,
-        "processing_time": 0.032202959060668945,
+        "result_size": 6722,
+        "processing_time": 0.025,
+        "total_docs": 4,
+        "docs_approved": 2,
+        "docs_rejected": 2,
+        "docs_no_license": 0,
         "source_doc_count": 4,
-        "result_doc_count": 4
+        "result_doc_count": 4,
+        "pct_docs_approved": 50.0,
+        "pct_docs_rejected": 50.0,
+        "pct_docs_no_license": 0.0,
+        "per_license_stats": {
+            "mit": {
+                "kept": 2,
+                "rejected": 0,
+                "total": 2,
+                "pct_of_corpus": 50.0
+            },
+            "gpl": {
+                "kept": 0,
+                "rejected": 1,
+                "total": 1,
+                "pct_of_corpus": 25.0
+            },
+            "apache": {
+                "kept": 0,
+                "rejected": 1,
+                "total": 1,
+                "pct_of_corpus": 25.0
+            }
+        }
     },
     "source": {
         "name": "../test-data/input",

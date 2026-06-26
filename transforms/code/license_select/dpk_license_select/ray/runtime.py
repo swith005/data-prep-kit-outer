@@ -11,20 +11,41 @@
 
 import os
 import sys
+from typing import Any
 
 from data_processing.utils import ParamsUtils
 
 ################################################################################
-from data_processing_ray.runtime.ray import RayTransformLauncher
+from data_processing_ray.runtime.ray import (
+    DefaultRayTransformRuntime,
+    RayTransformLauncher,
+)
 from data_processing_ray.runtime.ray.runtime_configuration import (
     RayTransformRuntimeConfiguration,
 )
-from dpk_license_select.transform import LicenseSelectTransformConfiguration
+from dpk_license_select.transform import (
+    LicenseSelectTransformConfiguration,
+    compute_license_percentages,
+)
+
+
+class LicenseSelectRayTransformRuntime(DefaultRayTransformRuntime):
+    """Custom runtime that, after all batches are aggregated, adds percentage
+    fields and the nested per-license breakdown to the job metadata."""
+
+    def __init__(self, params: dict[str, Any]):
+        super().__init__(params)
+
+    def compute_execution_stats(self, stats: dict[str, Any]) -> dict[str, Any]:
+        return compute_license_percentages(stats)
 
 
 class LicenseSelectRayTransformConfiguration(RayTransformRuntimeConfiguration):
     def __init__(self):
-        super().__init__(transform_config=LicenseSelectTransformConfiguration())
+        super().__init__(
+            transform_config=LicenseSelectTransformConfiguration(),
+            runtime_class=LicenseSelectRayTransformRuntime,
+        )
 
 
 class LicenseSelect:
