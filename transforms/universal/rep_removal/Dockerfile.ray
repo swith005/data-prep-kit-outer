@@ -1,0 +1,56 @@
+# 1. Set the base image
+ARG BASE_IMAGE=docker.io/rayproject/ray:2.24.0-py310
+FROM ${BASE_IMAGE}
+
+USER root
+RUN chown ray:root /home/ray && chmod 775 /home/ray
+
+# ca-certificates is required for curl to verify the Rust installation script
+RUN apt-get update && apt-get install -y \
+    curl \
+    gcc \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 4. Upgrade pip and install uv
+RUN pip install --upgrade --no-cache-dir pip && \
+    pip install uv
+
+RUN uv pip install --no-cache-dir --system pytest
+
+USER ray
+ENV HOME="/home/ray"
+WORKDIR ${HOME}
+
+RUN uv venv /home/ray/venv
+ENV PATH="/home/ray/venv/bin:$PATH"
+
+RUN uv pip install setuptools
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+# Fix: Ensure Cargo is added to the PATH correctly
+ENV PATH="/home/ray/.cargo/bin:$PATH"
+
+ARG DPK_WHEEL_FILE_NAME
+ARG TRANSFORM_NAME
+
+COPY --chmod=775 --chown=ray:root data-processing-dist data-processing-dist
+RUN uv pip install data-processing-dist/${DPK_WHEEL_FILE_NAME}[ray]
+
+COPY --chmod=775 --chown=ray:root dpk_${TRANSFORM_NAME}/ dpk_${TRANSFORM_NAME}/
+COPY --chmod=775 --chown=ray:root requirements.txt requirements.txt
+RUN uv pip install --no-cache-dir -r requirements.txt
+
+ENV PYTHONPATH="/home/ray"
+
+# Put these at the end since they seem to upset the docker cache.
+ARG BUILD_DATE
+ARG GIT_COMMIT
+ARG TRANSFORM_PATH
+ARG GIT_URL
+ENV GIT_URL $GIT_URL
+ENV TRANSFORM_PATH $TRANSFORM_PATH
+ENV BUILD_DATE $BUILD_DATE
+ENV GIT_COMMIT $GIT_COMMIT
+LABEL build-date=$BUILD_DATE
+LABEL git-commit=$GIT_COMMIT

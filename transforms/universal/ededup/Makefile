@@ -1,0 +1,72 @@
+REPOROOT=../../..
+# Use make help, to see the available rules
+include $(REPOROOT)/transforms/.make.cicd.targets
+
+#
+# This is intended to be included across the Makefiles provided within
+# a given transform's directory tree,  so must use compatible syntax.
+#
+################################################################################
+# This defines the name of the transform and is used to match against
+# expected files and is used to define the transform's image name. 
+TRANSFORM_NAME=$(shell basename `pwd`)
+
+################################################################################
+
+TRANSFORM_PYTHON_SRC="-m dpk_$(TRANSFORM_NAME).runtime"
+TRANSFORM_RAY_SRC="-m dpk_$(TRANSFORM_NAME).ray.runtime"
+
+run-cli-python:
+	make venv
+	source venv/bin/activate && \
+	python -m dpk_$(TRANSFORM_NAME).runtime \
+                --data_local_config "{ 'input_folder' : 'test-data/input', 'output_folder' : 'test-data/expected'}"  \
+				--ededup_doc_column "contents" \
+            	--ededup_doc_id "document_id"
+
+	source venv/bin/activate && \
+	python -m dpk_$(TRANSFORM_NAME).runtime \
+                --data_local_config "{ 'input_folder' : 'test-data/input', 'output_folder' : 'test-data/incremental'}"  \
+				--ededup_doc_column "contents" \
+            	--ededup_doc_id "document_id" \
+				--ededup_use_snapshot "True" \
+				--ededup_snapshot_directory test-data/input/snapshot
+
+
+run-cli-ray:
+	make venv
+	source venv/bin/activate && \
+	python -m dpk_$(TRANSFORM_NAME).ray.runtime \
+				--run_locally True \
+				--ededup_num_hashes 2 \
+                --data_local_config "{ 'input_folder' : 'test-data-ray/input', 'output_folder' : 'test-data-ray/expected'}"  \
+				--ededup_doc_column "contents" \
+            	--ededup_doc_id "document_id"
+
+	source venv/bin/activate && \
+	python -m dpk_$(TRANSFORM_NAME).ray.runtime \
+				--run_locally True \
+				--ededup_num_hashes 2 \
+                --data_local_config "{ 'input_folder' : 'test-data-ray/input', 'output_folder' : 'test-data-ray/incremental'}"  \
+				--ededup_doc_column "contents" \
+            	--ededup_doc_id "document_id" \
+				--ededup_use_snapshot "True" \
+				--ededup_snapshot_directory test-data-ray/input/snapshot
+
+
+run-cli-test:
+	make venv
+	source venv/bin/activate && \
+	python -m dpk_$(TRANSFORM_NAME).runtime \
+                --data_local_config "{ 'input_folder' : 'extracted', 'output_folder' : 'output'}"  \
+				--ededup_doc_column "contents" \
+            	--ededup_doc_id "doc_id"
+
+run-docker-test:
+	docker run -dt --name ededup-test -v $(PWD):/pwd ededup-python:latest \
+		python -m dpk_ededup.runtime \
+                --data_local_config "{ 'input_folder' : '/pwd/extracted', 'output_folder' : '/pwd/output'}"  \
+				--ededup_doc_column "contents" \
+            	--ededup_doc_id "doc_id"
+
+
